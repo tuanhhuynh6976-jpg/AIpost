@@ -94,7 +94,7 @@
   .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 13px; }
   .preview { display: none; align-items: flex-start; gap: 8px; }
   .preview.show { display: flex; }
-  .preview img { max-height: 180px; max-width: 100%; border-radius: 10px; border: 1px solid var(--line); }
+  .preview img, .preview video { max-height: 220px; max-width: 100%; border-radius: 10px; border: 1px solid var(--line); background: #000; }
   .preview button { background: var(--panel); border: 1px solid var(--line); border-radius: 999px; width: 26px; height: 26px; cursor: pointer; color: var(--muted); }
   .preview button:hover { color: var(--danger); }
   .actions .btn { padding: 4px 10px; font-size: 13px; }
@@ -447,8 +447,12 @@ async function send() {
 }
 
 /* ---------- Post to Facebook via n8n ---------- */
+// n8n.cloud rejects request bodies over about 16 MB, so keep uploads under this
+const MAX_UPLOAD = 15 * 1024 * 1024;
+
 function addActions(botEl, text) {
-  const state = { image: null };   // { mimeType, data } (base64 JPEG), lives only in memory
+  // state.media = { blob, kind: "image" | "gif" | "video", name, url }  (lives only in memory)
+  const state = { media: null };
 
   const wrap = document.createElement("div");
   wrap.className = "actions-wrap";
@@ -464,40 +468,55 @@ function addActions(botEl, text) {
   };
   const postBtn = mk("Post to Facebook");
   const genBtn = mk("Generate image");
-  const attachBtn = mk("Attach image");
+  const attachBtn = mk("Attach image / GIF / video");
   const fileIn = document.createElement("input");
-  fileIn.type = "file"; fileIn.accept = "image/*"; fileIn.hidden = true;
+  fileIn.type = "file"; fileIn.accept = "image/*,video/*"; fileIn.hidden = true;
   const status = document.createElement("span");
   status.className = "status";
 
-  const setImage = (img) => {
-    state.image = img;
+  const setMedia = (m) => {
+    if (state.media) URL.revokeObjectURL(state.media.url);
+    state.media = m;
     preview.innerHTML = "";
-    preview.classList.toggle("show", !!img);
-    if (!img) return;
-    const im = document.createElement("img");
-    im.src = "data:" + img.mimeType + ";base64," + img.data;
-    im.alt = "Image attached to the post";
+    preview.classList.toggle("show", !!m);
+    if (!m) return;
+    m.url = URL.createObjectURL(m.blob);
+    let el;
+    if (m.kind === "video") {
+      el = document.createElement("video");
+      el.controls = true; el.muted = true; el.playsInline = true; el.preload = "metadata";
+    } else {
+      el = document.createElement("img");
+      el.alt = "Media attached to the post";
+    }
+    el.src = m.url;
     const x = document.createElement("button");
-    x.type = "button"; x.textContent = "×"; x.setAttribute("aria-label", "Remove image");
-    x.onclick = () => setImage(null);
-    preview.append(im, x);
+    x.type = "button"; x.textContent = "×"; x.setAttribute("aria-label", "Remove attachment");
+    x.onclick = () => setMedia(null);
+    preview.append(el, x);
     scrollDown();
   };
 
   postBtn.onclick = () => postToFacebook(text, state, postBtn, status);
-  genBtn.onclick = () => generateImage(text, genBtn, status, setImage);
+  genBtn.onclick = () => generateImage(text, genBtn, status, setMedia);
   attachBtn.onclick = () => fileIn.click();
   fileIn.onchange = async () => {
     const f = fileIn.files[0];
     fileIn.value = "";
     if (!f) return;
+    status.className = "status"; status.textContent = "";
     try {
-      const url = URL.createObjectURL(f);
-      setImage(await toJpeg(url));
-      URL.revokeObjectURL(url);
-      status.className = "status"; status.textContent = "";
-    } catch { status.className = "status err"; status.textContent = "Could not read that image."; }
+      if (f.type.startsWith("video/") || f.type === "image/gif") {
+        if (f.size > MAX_UPLOAD) {
+          throw new Error(`File is ${(f.size / 1048576).toFixed(1)} MB. n8n.cloud accepts about 15 MB, so trim the clip or compress it first.`);
+        }
+        setMedia({ blob: f, kind: f.type === "image/gif" ? "gif" : "video", name: f.name });
+      } else if (f.type.startsWith("image/")) {
+        setMedia({ blob: await toJpeg(f), kind: "image", name: "post.jpg" });
+      } else {
+        throw new Error("Choose an image, GIF, or video file.");
+      }
+    } catch (err) { status.className = "status err"; status.textContent = err.message; }
   };
 
   row.append(postBtn, genBtn, attachBtn, fileIn, status);
@@ -506,22 +525,27 @@ function addActions(botEl, text) {
   scrollDown();
 }
 
-// Shrink to max 1600px and re-encode as JPEG so the request to n8n stays small
+// Shrink a still image to max 1600px and re-encode as JPEG (returns a Blob)
 async function toJpeg(src) {
-  const img = new Image();
-  img.src = src;
-  await img.decode();
-  const scale = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
-  const c = document.createElement("canvas");
-  c.width = Math.round(img.naturalWidth * scale);
-  c.height = Math.round(img.naturalHeight * scale);
-  const ctx = c.getContext("2d");
-  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
-  ctx.drawImage(img, 0, 0, c.width, c.height);
-  return { mimeType: "image/jpeg", data: c.toDataURL("image/jpeg", 0.85).split(",")[1] };
+  const url = typeof src === "string" ? src : URL.createObjectURL(src);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const scale = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.naturalWidth * scale);
+    c.height = Math.round(img.naturalHeight * scale);
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+    return await new Promise((res, rej) => c.toBlob((b) => b ? res(b) : rej(new Error("Could not read that image.")), "image/jpeg", 0.85));
+  } finally {
+    if (typeof src !== "string") URL.revokeObjectURL(url);
+  }
 }
 
-async function generateImage(text, btn, status, setImage) {
+async function generateImage(text, btn, status, setMedia) {
   const key = els.imgKey.value.trim() || (els.provider.value === "gemini" ? els.key.value.trim() : savedKeys.gemini.trim());
   const model = els.imgModel.value.trim().replace(/^models\//, "");
   if (!key) { alert("Image generation needs a Gemini key. Paste one in 'Image API key', or switch the provider to Gemini and enter it there."); return; }
@@ -550,7 +574,8 @@ async function generateImage(text, btn, status, setImage) {
     const imgPart = parts.find((p) => p.inlineData || p.inline_data);
     if (!imgPart) throw new Error(parts.map((p) => p.text).filter(Boolean).join(" ") || "The model returned no image.");
     const d = imgPart.inlineData || imgPart.inline_data;
-    setImage(await toJpeg("data:" + (d.mimeType || d.mime_type || "image/png") + ";base64," + d.data));
+    const blob = await toJpeg("data:" + (d.mimeType || d.mime_type || "image/png") + ";base64," + d.data);
+    setMedia({ blob, kind: "image", name: "post.jpg" });
     status.textContent = "";
   } catch (err) {
     status.className = "status err"; status.textContent = "Image failed: " + err.message;
@@ -562,23 +587,29 @@ async function generateImage(text, btn, status, setImage) {
 async function postToFacebook(text, state, btn, status) {
   const url = els.hook.value.trim();
   if (!url) { alert("Add your n8n webhook URL in Settings first."); return; }
+  const m = state.media;
+  const label = !m ? "" : m.kind === "video" ? " (with video)" : m.kind === "gif" ? " (with GIF)" : " (with image)";
   const preview = text.slice(0, 400) + (text.length > 400 ? "…" : "");
-  if (!confirm("Post this to your Facebook Page" + (state.image ? " (with image)" : "") + "?\n\n" + preview)) return;
+  if (!confirm("Post this to your Facebook Page" + label + "?\n\n" + preview)) return;
 
   btn.disabled = true;
-  status.className = "status"; status.textContent = "Posting…";
+  status.className = "status"; status.textContent = m && m.kind === "video" ? "Uploading video… this can take a minute" : "Posting…";
   try {
-    const payload = { message: text, secret: els.secret.value };
-    if (state.image) payload.image = state.image;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
+    // multipart/form-data: text fields go in n8n's body, the file arrives as binary "media"
+    const fd = new FormData();
+    fd.append("message", text);
+    fd.append("secret", els.secret.value);
+    fd.append("mediaType", !m ? "none" : m.kind === "video" ? "video" : "image");  // GIFs post as photos
+    if (m) fd.append("media", m.blob, m.name);
+
+    const res = await fetch(url, { method: "POST", body: fd });
     let data = {};
     try { data = await res.json(); } catch {}
     if (!res.ok || data.ok === false) throw new Error(data.error || res.status + " " + res.statusText);
-    status.className = "status ok"; status.textContent = "Posted" + (data.id ? " (id " + data.id + ")" : "");
+    status.className = "status ok";
+    status.textContent = m && m.kind === "video"
+      ? "Uploaded (id " + (data.id || "?") + "). Facebook may take a minute to process it."
+      : "Posted" + (data.id ? " (id " + data.id + ")" : "");
   } catch (err) {
     status.className = "status err"; status.textContent = "Post failed: " + err.message;
     btn.disabled = false;
