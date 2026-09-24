@@ -86,6 +86,10 @@
   .msg.bot :not(pre) > code { background: var(--panel); padding: 2px 5px; border-radius: 4px; }
   .msg.bot table { border-collapse: collapse; display: block; overflow-x: auto; }
   .msg.bot th, .msg.bot td { border: 1px solid var(--line); padding: 6px 10px; }
+  .actions { display: flex; align-items: center; gap: 12px; margin-top: -12px; font-size: 13px; }
+  .actions .btn { padding: 4px 10px; font-size: 13px; }
+  .actions .status.ok { color: var(--accent); }
+  .actions .status.err { color: var(--danger); }
   .cursor::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
   @media (prefers-reduced-motion: reduce) { .cursor::after { animation: none; } }
@@ -127,6 +131,14 @@
       <label for="system">System prompt</label>
       <textarea id="system" rows="2" placeholder="e.g. You are a helpful assistant that writes short, punchy Facebook posts."></textarea>
     </div>
+    <div class="field">
+      <label for="hook">n8n webhook URL (for Facebook posting)</label>
+      <input id="hook" type="text" autocomplete="off" placeholder="https://your-n8n.app.n8n.cloud/webhook/facebook-post">
+    </div>
+    <div class="field">
+      <label for="secret">n8n secret</label>
+      <input id="secret" type="password" autocomplete="off" placeholder="Same value as in the n8n workflow">
+    </div>
     <div class="field wide">
       <label>Files the AI can read (images, PDFs, text, code, CSV)</label>
       <div class="files-row">
@@ -165,7 +177,8 @@ const els = {
   key: $("apiKey"), model: $("model"), temp: $("temp"), tempOut: $("tempOut"),
   system: $("system"), fileBtn: $("fileBtn"), fileInput: $("fileInput"), chips: $("chips"),
   thread: $("thread"), chat: $("chat"), input: $("input"), send: $("sendBtn"),
-  newChat: $("newChat"), summary: $("summaryText")
+  newChat: $("newChat"), summary: $("summaryText"),
+  hook: $("hook"), secret: $("secret")
 };
 
 // Temporary chat memory: lives only in this array. Refresh or "New chat" wipes it.
@@ -334,10 +347,47 @@ async function send() {
     }
   } finally {
     botEl.classList.remove("cursor");
-    if (full) renderMarkdown(botEl, full);
+    if (full) { renderMarkdown(botEl, full); addActions(botEl, full); }
     setStreaming(false);
     controller = null;
     els.input.focus();
+  }
+}
+
+/* ---------- Post to Facebook via n8n ---------- */
+function addActions(botEl, text) {
+  const row = document.createElement("div");
+  row.className = "actions";
+  const btn = document.createElement("button");
+  btn.type = "button"; btn.className = "btn"; btn.textContent = "Post to Facebook";
+  const status = document.createElement("span");
+  status.className = "status";
+  btn.onclick = () => postToFacebook(text, btn, status);
+  row.append(btn, status);
+  botEl.after(row);
+  scrollDown();
+}
+
+async function postToFacebook(text, btn, status) {
+  const url = els.hook.value.trim();
+  if (!url) { alert("Add your n8n webhook URL in Settings first."); return; }
+  if (!confirm("Post this to your Facebook Page?\n\n" + text.slice(0, 400) + (text.length > 400 ? "…" : ""))) return;
+
+  btn.disabled = true;
+  status.className = "status"; status.textContent = "Posting…";
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: text, secret: els.secret.value })
+    });
+    let data = {};
+    try { data = await res.json(); } catch {}
+    if (!res.ok || data.ok === false) throw new Error(data.error || res.status + " " + res.statusText);
+    status.className = "status ok"; status.textContent = "Posted" + (data.id ? " (id " + data.id + ")" : "");
+  } catch (err) {
+    status.className = "status err"; status.textContent = "Post failed: " + err.message;
+    btn.disabled = false;
   }
 }
 
