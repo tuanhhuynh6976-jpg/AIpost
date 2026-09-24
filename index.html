@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chatbot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --line: #2a313c;
+    --text: #e6e9ee;
+    --muted: #8b95a5;
+    --accent: #5eead4;
+    --accent-ink: #06241f;
+    --user: #1f2a37;
+    --danger: #f87171;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 15px/1.6 "DM Sans", system-ui, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  button, input, textarea { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* Settings */
+  details.settings { background: var(--panel); border-bottom: 1px solid var(--line); }
+  details.settings > summary {
+    cursor: pointer; padding: 12px 20px; color: var(--muted); list-style: none;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  details.settings > summary::-webkit-details-marker { display: none; }
+  details.settings > summary strong { color: var(--text); font-weight: 700; }
+  .settings-grid {
+    display: grid; gap: 14px 16px; padding: 4px 20px 18px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    max-width: 1100px; margin: 0 auto;
+  }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field.wide { grid-column: 1 / -1; }
+  .field label { font-size: 13px; color: var(--muted); }
+  input[type=text], input[type=password], textarea {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 9px 12px; width: 100%;
+  }
+  textarea { resize: vertical; }
+  input[type=range] { accent-color: var(--accent); width: 100%; }
+  .temp-row { display: flex; align-items: center; gap: 12px; }
+  .temp-row output { min-width: 2.5em; font-family: "JetBrains Mono", monospace; font-size: 13px; }
+
+  .btn {
+    background: transparent; border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 14px; cursor: pointer;
+  }
+  .btn:hover { border-color: var(--muted); }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .files-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .chip {
+    display: inline-flex; gap: 8px; align-items: center; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 6px 3px 12px; font-size: 13px;
+  }
+  .chip button { background: none; border: 0; cursor: pointer; color: var(--muted); padding: 0 6px; font-size: 16px; }
+  .chip button:hover { color: var(--danger); }
+
+  /* Chat */
+  #chat { flex: 1; overflow-y: auto; padding: 24px 20px 8px; }
+  .thread { max-width: 780px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+  .empty { margin: 14vh auto 0; text-align: center; color: var(--muted); max-width: 420px; }
+  .empty h1 { color: var(--text); font-size: 26px; margin: 0 0 8px; }
+  .msg.user { align-self: flex-end; max-width: 85%; background: var(--user); padding: 10px 14px; border-radius: 16px 16px 4px 16px; white-space: pre-wrap; }
+  .msg.user .attached { display: block; font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .msg.bot { max-width: 100%; overflow-wrap: anywhere; }
+  .msg.bot.error { color: var(--danger); }
+  .msg.bot > :first-child { margin-top: 0; }
+  .msg.bot p, .msg.bot ul, .msg.bot ol { margin: 0 0 12px; }
+  .msg.bot pre { background: #0a0d12; border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; }
+  .msg.bot code { font-family: "JetBrains Mono", monospace; font-size: 13px; }
+  .msg.bot :not(pre) > code { background: var(--panel); padding: 2px 5px; border-radius: 4px; }
+  .msg.bot table { border-collapse: collapse; display: block; overflow-x: auto; }
+  .msg.bot th, .msg.bot td { border: 1px solid var(--line); padding: 6px 10px; }
+  .cursor::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .cursor::after { animation: none; } }
+
+  /* Composer */
+  .composer { padding: 12px 20px 18px; }
+  .composer-inner {
+    max-width: 780px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 8px;
+  }
+  .composer textarea { border: 0; background: transparent; resize: none; max-height: 200px; padding: 8px 10px; }
+  .composer textarea:focus-visible { outline: none; }
+  .composer-inner:focus-within { border-color: var(--accent); }
+  .hint { max-width: 780px; margin: 6px auto 0; font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; }
+  .hint button { background: none; border: 0; color: var(--muted); cursor: pointer; text-decoration: underline; padding: 0; }
+</style>
+</head>
+<body>
+
+<details class="settings" open>
+  <summary><strong>Settings</strong><span id="summaryText">Add your API key to start</span></summary>
+  <div class="settings-grid">
+    <div class="field">
+      <label for="apiKey">Gemini API key</label>
+      <input id="apiKey" type="password" autocomplete="off" placeholder="Paste your key">
+    </div>
+    <div class="field">
+      <label for="model">Model name</label>
+      <input id="model" type="text" value="gemini-2.5-flash" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="temp">Temperature</label>
+      <div class="temp-row">
+        <input id="temp" type="range" min="0" max="2" step="0.1" value="1">
+        <output id="tempOut" for="temp">1.0</output>
+      </div>
+    </div>
+    <div class="field wide">
+      <label for="system">System prompt</label>
+      <textarea id="system" rows="2" placeholder="e.g. You are a helpful assistant that writes short, punchy Facebook posts."></textarea>
+    </div>
+    <div class="field wide">
+      <label>Files the AI can read (images, PDFs, text, code, CSV)</label>
+      <div class="files-row">
+        <button class="btn" id="fileBtn" type="button">Upload files</button>
+        <input id="fileInput" type="file" multiple hidden
+               accept="image/*,application/pdf,.txt,.md,.csv,.json,.js,.ts,.py,.html,.css,.xml,.yaml,.yml,.log">
+        <span id="chips" class="files-row"></span>
+      </div>
+    </div>
+  </div>
+</details>
+
+<main id="chat" aria-live="polite">
+  <div class="thread" id="thread">
+    <div class="empty" id="empty">
+      <h1>What are we working on?</h1>
+      <p>Set your key and model above, then send a message. The chat remembers earlier messages until you start a new chat or refresh.</p>
+    </div>
+  </div>
+</main>
+
+<div class="composer">
+  <div class="composer-inner">
+    <textarea id="input" rows="1" placeholder="Message the model…" aria-label="Message"></textarea>
+    <button class="btn primary" id="sendBtn" type="button">Send</button>
+  </div>
+  <div class="hint">
+    <span>Enter to send, Shift+Enter for a new line</span>
+    <button id="newChat" type="button">New chat</button>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const els = {
+  key: $("apiKey"), model: $("model"), temp: $("temp"), tempOut: $("tempOut"),
+  system: $("system"), fileBtn: $("fileBtn"), fileInput: $("fileInput"), chips: $("chips"),
+  thread: $("thread"), chat: $("chat"), input: $("input"), send: $("sendBtn"),
+  newChat: $("newChat"), summary: $("summaryText")
+};
+
+// Temporary chat memory: lives only in this array. Refresh or "New chat" wipes it.
+let history = [];
+let pendingFiles = [];   // files attached to the next message
+let controller = null;   // for stopping a stream
+let streaming = false;
+
+const TEXT_EXT = /\.(txt|md|csv|json|js|ts|py|html|css|xml|ya?ml|log)$/i;
+const MAX_BYTES = 15 * 1024 * 1024;
+
+els.temp.addEventListener("input", () => { els.tempOut.textContent = Number(els.temp.value).toFixed(1); });
+els.key.addEventListener("input", updateSummary);
+els.model.addEventListener("input", updateSummary);
+function updateSummary() {
+  els.summary.textContent = els.key.value.trim() ? els.model.value.trim() || "Set a model" : "Add your API key to start";
+}
+
+/* ---------- Files ---------- */
+els.fileBtn.addEventListener("click", () => els.fileInput.click());
+els.fileInput.addEventListener("change", async () => {
+  for (const f of els.fileInput.files) {
+    if (f.size > MAX_BYTES) { alert(f.name + " is over 15 MB and was skipped."); continue; }
+    try { pendingFiles.push(await readFile(f)); }
+    catch { alert("Could not read " + f.name); }
+  }
+  els.fileInput.value = "";
+  renderChips();
+});
+
+function readFile(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onerror = reject;
+    if (file.type.startsWith("text/") || TEXT_EXT.test(file.name)) {
+      r.onload = () => resolve({ name: file.name, part: { text: `[File: ${file.name}]\n${r.result}\n[End of file]` } });
+      r.readAsText(file);
+    } else {
+      r.onload = () => resolve({
+        name: file.name,
+        part: { inlineData: { mimeType: file.type || "application/octet-stream", data: String(r.result).split(",")[1] } }
+      });
+      r.readAsDataURL(file);
+    }
+  });
+}
+
+function renderChips() {
+  els.chips.innerHTML = "";
+  pendingFiles.forEach((f, i) => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = f.name;
+    const x = document.createElement("button");
+    x.type = "button"; x.textContent = "×"; x.setAttribute("aria-label", "Remove " + f.name);
+    x.onclick = () => { pendingFiles.splice(i, 1); renderChips(); };
+    chip.appendChild(x);
+    els.chips.appendChild(chip);
+  });
+}
+
+/* ---------- Rendering ---------- */
+function renderMarkdown(el, text) {
+  if (window.marked && window.DOMPurify) el.innerHTML = DOMPurify.sanitize(marked.parse(text));
+  else el.textContent = text;
+}
+function addMessage(kind, text) {
+  $("empty")?.remove();
+  const div = document.createElement("div");
+  div.className = "msg " + kind;
+  if (text) div.textContent = text;
+  els.thread.appendChild(div);
+  scrollDown();
+  return div;
+}
+function scrollDown() { els.chat.scrollTop = els.chat.scrollHeight; }
+
+/* ---------- Sending ---------- */
+async function send() {
+  if (streaming) { controller?.abort(); return; }
+
+  const text = els.input.value.trim();
+  const apiKey = els.key.value.trim();
+  const model = els.model.value.trim().replace(/^models\//, "");
+  if (!text && !pendingFiles.length) return;
+  if (!apiKey) { alert("Paste your API key in Settings first."); return; }
+  if (!model) { alert("Enter a model name in Settings."); return; }
+
+  // Build the user turn (text + any attached files)
+  const files = pendingFiles;
+  pendingFiles = []; renderChips();
+  const parts = files.map((f) => f.part);
+  parts.push({ text: text || "Please look at the attached file(s)." });
+  const userTurn = { role: "user", parts };
+
+  const bubble = addMessage("user", text);
+  if (files.length) {
+    const s = document.createElement("span");
+    s.className = "attached";
+    s.textContent = "Attached: " + files.map((f) => f.name).join(", ");
+    bubble.appendChild(s);
+  }
+  els.input.value = ""; autoGrow();
+
+  history.push(userTurn);
+  const botEl = addMessage("bot cursor");
+  setStreaming(true);
+  controller = new AbortController();
+
+  const body = {
+    contents: history,
+    generationConfig: { temperature: Number(els.temp.value) }
+  };
+  const sys = els.system.value.trim();
+  if (sys) body.systemInstruction = { parts: [{ text: sys }] };
+
+  let full = "";
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    if (!res.ok) {
+      let msg = res.status + " " + res.statusText;
+      try { msg = (await res.json()).error?.message || msg; } catch {}
+      throw new Error(msg);
+    }
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "", queued = false;
+    const paint = () => { queued = false; renderMarkdown(botEl, full); scrollDown(); };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload) continue;
+        try {
+          const chunk = JSON.parse(payload);
+          const t = chunk.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "";
+          if (t) full += t;
+          if (chunk.promptFeedback?.blockReason) throw new Error("Blocked: " + chunk.promptFeedback.blockReason);
+        } catch (e) { if (e.message?.startsWith("Blocked")) throw e; }
+      }
+      if (!queued) { queued = true; requestAnimationFrame(paint); }
+    }
+    if (!full) throw new Error("The model returned an empty response.");
+    history.push({ role: "model", parts: [{ text: full }] });
+  } catch (err) {
+    if (err.name === "AbortError") {
+      if (full) history.push({ role: "model", parts: [{ text: full }] });
+      else history.pop();
+    } else {
+      history.pop(); // drop the failed user turn so memory stays consistent
+      botEl.classList.add("error");
+      botEl.textContent = "Request failed: " + err.message;
+    }
+  } finally {
+    botEl.classList.remove("cursor");
+    if (full) renderMarkdown(botEl, full);
+    setStreaming(false);
+    controller = null;
+    els.input.focus();
+  }
+}
+
+function setStreaming(on) {
+  streaming = on;
+  els.send.textContent = on ? "Stop" : "Send";
+}
+
+/* ---------- Input behavior ---------- */
+function autoGrow() {
+  els.input.style.height = "auto";
+  els.input.style.height = Math.min(els.input.scrollHeight, 200) + "px";
+}
+els.input.addEventListener("input", autoGrow);
+els.input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!streaming) send(); }
+});
+els.send.addEventListener("click", send);
+
+els.newChat.addEventListener("click", () => {
+  controller?.abort();
+  history = [];
+  els.thread.innerHTML = `<div class="empty" id="empty"><h1>What are we working on?</h1><p>New chat started. Earlier messages are forgotten.</p></div>`;
+});
+</script>
+</body>
+</html>
