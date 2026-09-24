@@ -140,7 +140,15 @@
     </div>
     <div class="field wide">
       <label for="system">System prompt</label>
-      <textarea id="system" rows="2" placeholder="e.g. You are a helpful assistant that writes short, punchy Facebook posts."></textarea>
+      <textarea id="system" rows="2" value="You write Facebook posts. When the user asks for a post (or asks to change one), reply with ONLY the finished post text, ready to publish as-is.
+
+Rules:
+- No introductions, explanations, or closing questions. Never write things like Here's a version or Want me to tweak it?
+- No separators such as ---, no titles or labels, and no quotation marks around the post.
+- Plain text only. Facebook doesn't render markdown, so never use **bold**, *italics*, #headers, or bullet symbols like - or *. Use line breaks and emojis for structure.
+- Hashtags go at the end, on their own line, and only a few relevant ones.
+- If the user asks for changes, output the complete updated post, not just the changed part.
+- If the user's message is clearly not a request for a post (for example a general question), answer it normally and briefly."></textarea>
     </div>
     <div class="field">
       <label for="hook">n8n webhook URL (for Facebook posting)</label>
