@@ -50,6 +50,10 @@
     background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
     padding: 9px 12px; width: 100%;
   }
+  select {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 9px 12px; width: 100%; color-scheme: dark;
+  }
   textarea { resize: vertical; }
   input[type=range] { accent-color: var(--accent); width: 100%; }
   .temp-row { display: flex; align-items: center; gap: 12px; }
@@ -113,12 +117,19 @@
   <summary><strong>Settings</strong><span id="summaryText">Add your API key to start</span></summary>
   <div class="settings-grid">
     <div class="field">
-      <label for="apiKey">Gemini API key</label>
+      <label for="provider">Provider</label>
+      <select id="provider">
+        <option value="gemini">Google Gemini</option>
+        <option value="deepseek">DeepSeek</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="apiKey" id="keyLabel">Gemini API key</label>
       <input id="apiKey" type="password" autocomplete="off" placeholder="Paste your key">
     </div>
     <div class="field">
       <label for="model">Model name</label>
-      <input id="model" type="text" value="gemini-3.6-flash" autocomplete="off">
+      <input id="model" type="text" value="gemini-2.5-flash" autocomplete="off">
     </div>
     <div class="field">
       <label for="temp">Temperature</label>
@@ -140,7 +151,7 @@
       <input id="secret" type="password" autocomplete="off" placeholder="Same value as in the n8n workflow">
     </div>
     <div class="field wide">
-      <label>Files the AI can read (images, PDFs, text, code, CSV)</label>
+      <label id="fileLabel">Files the AI can read (images, PDFs, text, code, CSV)</label>
       <div class="files-row">
         <button class="btn" id="fileBtn" type="button">Upload files</button>
         <input id="fileInput" type="file" multiple hidden
@@ -178,7 +189,7 @@ const els = {
   system: $("system"), fileBtn: $("fileBtn"), fileInput: $("fileInput"), chips: $("chips"),
   thread: $("thread"), chat: $("chat"), input: $("input"), send: $("sendBtn"),
   newChat: $("newChat"), summary: $("summaryText"),
-  hook: $("hook"), secret: $("secret")
+  hook: $("hook"), secret: $("secret"), provider: $("provider"), keyLabel: $("keyLabel"), fileLabel: $("fileLabel")
 };
 
 // Temporary chat memory: lives only in this array. Refresh or "New chat" wipes it.
@@ -197,12 +208,51 @@ function updateSummary() {
   els.summary.textContent = els.key.value.trim() ? els.model.value.trim() || "Set a model" : "Add your API key to start";
 }
 
+/* ---------- Providers ---------- */
+const PROVIDERS = {
+  gemini: {
+    keyLabel: "Gemini API key", model: "gemini-2.5-flash",
+    fileLabel: "Files the AI can read (images, PDFs, text, code, CSV)"
+  },
+  deepseek: {
+    keyLabel: "DeepSeek API key", model: "deepseek-chat",
+    fileLabel: "Files the AI can read (text, code, CSV only. DeepSeek can't read images or PDFs)"
+  }
+};
+const savedKeys = { gemini: "", deepseek: "" };  // each provider remembers its own key (in memory only)
+const savedModels = { gemini: PROVIDERS.gemini.model, deepseek: PROVIDERS.deepseek.model };
+let currentProvider = "gemini";
+
+els.provider.addEventListener("change", () => {
+  savedKeys[currentProvider] = els.key.value;
+  savedModels[currentProvider] = els.model.value;
+  currentProvider = els.provider.value;
+  const p = PROVIDERS[currentProvider];
+  els.key.value = savedKeys[currentProvider];
+  els.model.value = savedModels[currentProvider];
+  els.keyLabel.textContent = p.keyLabel;
+  els.fileLabel.textContent = p.fileLabel;
+  if (currentProvider === "deepseek" && pendingFiles.some((f) => f.part.inlineData)) {
+    pendingFiles = pendingFiles.filter((f) => !f.part.inlineData);
+    renderChips();
+    alert("Images and PDFs were removed because DeepSeek only reads text.");
+  }
+  updateSummary();
+});
+
 /* ---------- Files ---------- */
 els.fileBtn.addEventListener("click", () => els.fileInput.click());
 els.fileInput.addEventListener("change", async () => {
   for (const f of els.fileInput.files) {
     if (f.size > MAX_BYTES) { alert(f.name + " is over 15 MB and was skipped."); continue; }
-    try { pendingFiles.push(await readFile(f)); }
+    try {
+      const item = await readFile(f);
+      if (item.part.inlineData && els.provider.value === "deepseek") {
+        alert(f.name + " skipped: DeepSeek can only read text files (txt, md, csv, json, code).");
+        continue;
+      }
+      pendingFiles.push(item);
+    }
     catch { alert("Could not read " + f.name); }
   }
   els.fileInput.value = "";
@@ -257,12 +307,48 @@ function addMessage(kind, text) {
 function scrollDown() { els.chat.scrollTop = els.chat.scrollHeight; }
 
 /* ---------- Sending ---------- */
+// History is stored in Gemini's format; DeepSeek gets a converted copy.
+function buildRequest(provider, model, apiKey) {
+  const temperature = Number(els.temp.value);
+  const sys = els.system.value.trim();
+
+  if (provider === "deepseek") {
+    const messages = [];
+    if (sys) messages.push({ role: "system", content: sys });
+    for (const turn of history) {
+      const content = turn.parts
+        .map((p) => p.text ?? "[attached file omitted: DeepSeek is text-only]")
+        .join("\n\n");
+      messages.push({ role: turn.role === "model" ? "assistant" : "user", content });
+    }
+    return {
+      url: "https://api.deepseek.com/chat/completions",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + apiKey },
+      body: { model, messages, temperature, stream: true }
+    };
+  }
+
+  const body = { contents: history, generationConfig: { temperature } };
+  if (sys) body.systemInstruction = { parts: [{ text: sys }] };
+  return {
+    url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`,
+    headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+    body
+  };
+}
+
+function extractText(provider, chunk) {
+  if (provider === "deepseek") return chunk.choices?.[0]?.delta?.content || "";
+  if (chunk.promptFeedback?.blockReason) throw new Error("Blocked: " + chunk.promptFeedback.blockReason);
+  return chunk.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "";
+}
 async function send() {
   if (streaming) { controller?.abort(); return; }
 
   const text = els.input.value.trim();
   const apiKey = els.key.value.trim();
   const model = els.model.value.trim().replace(/^models\//, "");
+  const provider = els.provider.value;
   if (!text && !pendingFiles.length) return;
   if (!apiKey) { alert("Paste your API key in Settings first."); return; }
   if (!model) { alert("Enter a model name in Settings."); return; }
@@ -288,20 +374,13 @@ async function send() {
   setStreaming(true);
   controller = new AbortController();
 
-  const body = {
-    contents: history,
-    generationConfig: { temperature: Number(els.temp.value) }
-  };
-  const sys = els.system.value.trim();
-  if (sys) body.systemInstruction = { parts: [{ text: sys }] };
-
   let full = "";
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
-    const res = await fetch(url, {
+    const req = buildRequest(provider, model, apiKey);
+    const res = await fetch(req.url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-      body: JSON.stringify(body),
+      headers: req.headers,
+      body: JSON.stringify(req.body),
       signal: controller.signal
     });
     if (!res.ok) {
@@ -325,11 +404,9 @@ async function send() {
         if (!line.startsWith("data:")) continue;
         const payload = line.slice(5).trim();
         if (!payload) continue;
+        if (payload === "[DONE]") continue;
         try {
-          const chunk = JSON.parse(payload);
-          const t = chunk.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "";
-          if (t) full += t;
-          if (chunk.promptFeedback?.blockReason) throw new Error("Blocked: " + chunk.promptFeedback.blockReason);
+          full += extractText(provider, JSON.parse(payload));
         } catch (e) { if (e.message?.startsWith("Blocked")) throw e; }
       }
       if (!queued) { queued = true; requestAnimationFrame(paint); }
@@ -343,7 +420,8 @@ async function send() {
     } else {
       history.pop(); // drop the failed user turn so memory stays consistent
       botEl.classList.add("error");
-      botEl.textContent = "Request failed: " + err.message;
+      botEl.textContent = "Request failed: " + err.message +
+        (err instanceof TypeError ? " (network or CORS problem. Check your connection, key, and model name.)" : "");
     }
   } finally {
     botEl.classList.remove("cursor");
