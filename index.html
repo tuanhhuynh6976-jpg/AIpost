@@ -90,7 +90,13 @@
   .msg.bot :not(pre) > code { background: var(--panel); padding: 2px 5px; border-radius: 4px; }
   .msg.bot table { border-collapse: collapse; display: block; overflow-x: auto; }
   .msg.bot th, .msg.bot td { border: 1px solid var(--line); padding: 6px 10px; }
-  .actions { display: flex; align-items: center; gap: 12px; margin-top: -12px; font-size: 13px; }
+  .actions-wrap { margin-top: -12px; display: flex; flex-direction: column; gap: 10px; }
+  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 13px; }
+  .preview { display: none; align-items: flex-start; gap: 8px; }
+  .preview.show { display: flex; }
+  .preview img { max-height: 180px; max-width: 100%; border-radius: 10px; border: 1px solid var(--line); }
+  .preview button { background: var(--panel); border: 1px solid var(--line); border-radius: 999px; width: 26px; height: 26px; cursor: pointer; color: var(--muted); }
+  .preview button:hover { color: var(--danger); }
   .actions .btn { padding: 4px 10px; font-size: 13px; }
   .actions .status.ok { color: var(--accent); }
   .actions .status.err { color: var(--danger); }
@@ -150,6 +156,14 @@
       <label for="secret">n8n secret</label>
       <input id="secret" type="password" autocomplete="off" placeholder="Same value as in the n8n workflow">
     </div>
+    <div class="field">
+      <label for="imgModel">Image model (Gemini)</label>
+      <input id="imgModel" type="text" value="gemini-2.5-flash-image" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="imgKey">Image API key (blank = reuse Gemini key)</label>
+      <input id="imgKey" type="password" autocomplete="off" placeholder="Only needed if provider is DeepSeek">
+    </div>
     <div class="field wide">
       <label id="fileLabel">Files the AI can read (images, PDFs, text, code, CSV)</label>
       <div class="files-row">
@@ -189,7 +203,7 @@ const els = {
   system: $("system"), fileBtn: $("fileBtn"), fileInput: $("fileInput"), chips: $("chips"),
   thread: $("thread"), chat: $("chat"), input: $("input"), send: $("sendBtn"),
   newChat: $("newChat"), summary: $("summaryText"),
-  hook: $("hook"), secret: $("secret"), provider: $("provider"), keyLabel: $("keyLabel"), fileLabel: $("fileLabel")
+  hook: $("hook"), secret: $("secret"), provider: $("provider"), imgModel: $("imgModel"), imgKey: $("imgKey"), keyLabel: $("keyLabel"), fileLabel: $("fileLabel")
 };
 
 // Temporary chat memory: lives only in this array. Refresh or "New chat" wipes it.
@@ -211,7 +225,7 @@ function updateSummary() {
 /* ---------- Providers ---------- */
 const PROVIDERS = {
   gemini: {
-    keyLabel: "Gemini API key", model: "gemini-2.5-flash",
+    keyLabel: "Gemini API key", model: "gemini-3.6-flash",
     fileLabel: "Files the AI can read (images, PDFs, text, code, CSV)"
   },
   deepseek: {
@@ -434,30 +448,132 @@ async function send() {
 
 /* ---------- Post to Facebook via n8n ---------- */
 function addActions(botEl, text) {
+  const state = { image: null };   // { mimeType, data } (base64 JPEG), lives only in memory
+
+  const wrap = document.createElement("div");
+  wrap.className = "actions-wrap";
   const row = document.createElement("div");
   row.className = "actions";
-  const btn = document.createElement("button");
-  btn.type = "button"; btn.className = "btn"; btn.textContent = "Post to Facebook";
+  const preview = document.createElement("div");
+  preview.className = "preview";
+
+  const mk = (label) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "btn"; b.textContent = label;
+    return b;
+  };
+  const postBtn = mk("Post to Facebook");
+  const genBtn = mk("Generate image");
+  const attachBtn = mk("Attach image");
+  const fileIn = document.createElement("input");
+  fileIn.type = "file"; fileIn.accept = "image/*"; fileIn.hidden = true;
   const status = document.createElement("span");
   status.className = "status";
-  btn.onclick = () => postToFacebook(text, btn, status);
-  row.append(btn, status);
-  botEl.after(row);
+
+  const setImage = (img) => {
+    state.image = img;
+    preview.innerHTML = "";
+    preview.classList.toggle("show", !!img);
+    if (!img) return;
+    const im = document.createElement("img");
+    im.src = "data:" + img.mimeType + ";base64," + img.data;
+    im.alt = "Image attached to the post";
+    const x = document.createElement("button");
+    x.type = "button"; x.textContent = "×"; x.setAttribute("aria-label", "Remove image");
+    x.onclick = () => setImage(null);
+    preview.append(im, x);
+    scrollDown();
+  };
+
+  postBtn.onclick = () => postToFacebook(text, state, postBtn, status);
+  genBtn.onclick = () => generateImage(text, genBtn, status, setImage);
+  attachBtn.onclick = () => fileIn.click();
+  fileIn.onchange = async () => {
+    const f = fileIn.files[0];
+    fileIn.value = "";
+    if (!f) return;
+    try {
+      const url = URL.createObjectURL(f);
+      setImage(await toJpeg(url));
+      URL.revokeObjectURL(url);
+      status.className = "status"; status.textContent = "";
+    } catch { status.className = "status err"; status.textContent = "Could not read that image."; }
+  };
+
+  row.append(postBtn, genBtn, attachBtn, fileIn, status);
+  wrap.append(row, preview);
+  botEl.after(wrap);
   scrollDown();
 }
 
-async function postToFacebook(text, btn, status) {
+// Shrink to max 1600px and re-encode as JPEG so the request to n8n stays small
+async function toJpeg(src) {
+  const img = new Image();
+  img.src = src;
+  await img.decode();
+  const scale = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+  const c = document.createElement("canvas");
+  c.width = Math.round(img.naturalWidth * scale);
+  c.height = Math.round(img.naturalHeight * scale);
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(img, 0, 0, c.width, c.height);
+  return { mimeType: "image/jpeg", data: c.toDataURL("image/jpeg", 0.85).split(",")[1] };
+}
+
+async function generateImage(text, btn, status, setImage) {
+  const key = els.imgKey.value.trim() || (els.provider.value === "gemini" ? els.key.value.trim() : savedKeys.gemini.trim());
+  const model = els.imgModel.value.trim().replace(/^models\//, "");
+  if (!key) { alert("Image generation needs a Gemini key. Paste one in 'Image API key', or switch the provider to Gemini and enter it there."); return; }
+  if (!model) { alert("Enter an image model in Settings."); return; }
+
+  const prompt = window.prompt(
+    "Describe the image to generate (edit if you like):",
+    "A clean, eye-catching photo for this Facebook post. Do not include any text or lettering in the image. Post: " + text.slice(0, 500)
+  );
+  if (!prompt) return;
+
+  btn.disabled = true;
+  status.className = "status"; status.textContent = "Generating image…";
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseModalities: ["TEXT", "IMAGE"] }
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error?.message || res.status + " " + res.statusText);
+    const parts = data.candidates?.[0]?.content?.parts || [];
+    const imgPart = parts.find((p) => p.inlineData || p.inline_data);
+    if (!imgPart) throw new Error(parts.map((p) => p.text).filter(Boolean).join(" ") || "The model returned no image.");
+    const d = imgPart.inlineData || imgPart.inline_data;
+    setImage(await toJpeg("data:" + (d.mimeType || d.mime_type || "image/png") + ";base64," + d.data));
+    status.textContent = "";
+  } catch (err) {
+    status.className = "status err"; status.textContent = "Image failed: " + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function postToFacebook(text, state, btn, status) {
   const url = els.hook.value.trim();
   if (!url) { alert("Add your n8n webhook URL in Settings first."); return; }
-  if (!confirm("Post this to your Facebook Page?\n\n" + text.slice(0, 400) + (text.length > 400 ? "…" : ""))) return;
+  const preview = text.slice(0, 400) + (text.length > 400 ? "…" : "");
+  if (!confirm("Post this to your Facebook Page" + (state.image ? " (with image)" : "") + "?\n\n" + preview)) return;
 
   btn.disabled = true;
   status.className = "status"; status.textContent = "Posting…";
   try {
+    const payload = { message: text, secret: els.secret.value };
+    if (state.image) payload.image = state.image;
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, secret: els.secret.value })
+      body: JSON.stringify(payload)
     });
     let data = {};
     try { data = await res.json(); } catch {}
