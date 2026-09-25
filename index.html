@@ -50,6 +50,10 @@
     background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
     padding: 9px 12px; width: 100%;
   }
+  .mode-row { display: flex; gap: 18px; margin-bottom: 2px; }
+  .mode-row .radio { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; }
+  .mode-row .radio input { accent-color: var(--accent); cursor: pointer; }
+  #system:disabled { opacity: 0.6; cursor: not-allowed; }
   select {
     background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
     padding: 9px 12px; width: 100%; color-scheme: dark;
@@ -145,8 +149,12 @@
       </div>
     </div>
     <div class="field wide">
-      <label for="system">System prompt</label>
-      <textarea id="system" rows="2" placeholder="e.g. You are a helpful assistant that writes short, punchy Facebook posts."></textarea>
+      <label>System prompt</label>
+      <div class="mode-row">
+        <label class="radio"><input type="radio" name="promptMode" id="modeFacebook" value="facebook" checked> Facebook post mode</label>
+        <label class="radio"><input type="radio" name="promptMode" id="modeCustom" value="custom"> Custom prompt</label>
+      </div>
+      <textarea id="system" rows="2" placeholder="e.g. You are a helpful assistant that writes short, punchy Facebook posts." disabled></textarea>
     </div>
     <div class="field">
       <label for="hook">n8n webhook URL (for Facebook posting)</label>
@@ -203,7 +211,8 @@ const els = {
   system: $("system"), fileBtn: $("fileBtn"), fileInput: $("fileInput"), chips: $("chips"),
   thread: $("thread"), chat: $("chat"), input: $("input"), send: $("sendBtn"),
   newChat: $("newChat"), summary: $("summaryText"),
-  hook: $("hook"), secret: $("secret"), provider: $("provider"), imgModel: $("imgModel"), imgKey: $("imgKey"), keyLabel: $("keyLabel"), fileLabel: $("fileLabel")
+  hook: $("hook"), secret: $("secret"), provider: $("provider"), imgModel: $("imgModel"), imgKey: $("imgKey"),
+  modeFacebook: $("modeFacebook"), modeCustom: $("modeCustom"), keyLabel: $("keyLabel"), fileLabel: $("fileLabel")
 };
 
 // Temporary chat memory: lives only in this array. Refresh or "New chat" wipes it.
@@ -221,6 +230,38 @@ els.model.addEventListener("input", updateSummary);
 function updateSummary() {
   els.summary.textContent = els.key.value.trim() ? els.model.value.trim() || "Set a model" : "Add your API key to start";
 }
+
+/* ---------- System prompt mode ---------- */
+const FB_PRESET = `You write Facebook posts. When the user asks for a post (or asks to change one), reply with ONLY the finished post text, ready to publish as-is.
+Rules:
+- No introductions, explanations, or closing questions. Never write things like "Here's a version" or "Want me to tweak it?".
+- No separators such as "---", no titles or labels, and no quotation marks around the post.
+- Plain text only. Facebook doesn't render markdown, so never use **bold**, *italics*, #headers, or bullet symbols like "-" or "*". Use line breaks and emojis for structure.
+- Hashtags go at the end, on their own line, and only a few relevant ones.
+- If the user asks for changes, output the complete updated post, not just the changed part.
+- If the user's message is clearly not a request for a post (for example a general question), answer it normally and briefly.`;
+
+let customPromptDraft = "";  // remembers what the user typed in Custom mode while Facebook mode is active
+
+function applyPromptMode() {
+  if (els.modeFacebook.checked) {
+    els.system.value = FB_PRESET;
+    els.system.disabled = true;
+  } else {
+    els.system.value = customPromptDraft;
+    els.system.disabled = false;
+    els.system.focus();
+  }
+}
+els.modeFacebook.addEventListener("change", applyPromptMode);
+els.modeCustom.addEventListener("change", applyPromptMode);
+els.system.addEventListener("input", () => {
+  if (els.modeCustom.checked) customPromptDraft = els.system.value;
+});
+function getSystemPrompt() {
+  return (els.modeFacebook.checked ? FB_PRESET : els.system.value).trim();
+}
+applyPromptMode(); // Facebook post mode is the default on load
 
 /* ---------- Providers ---------- */
 const PROVIDERS = {
@@ -324,7 +365,7 @@ function scrollDown() { els.chat.scrollTop = els.chat.scrollHeight; }
 // History is stored in Gemini's format; DeepSeek gets a converted copy.
 function buildRequest(provider, model, apiKey) {
   const temperature = Number(els.temp.value);
-  const sys = els.system.value.trim();
+  const sys = getSystemPrompt();
 
   if (provider === "deepseek") {
     const messages = [];
